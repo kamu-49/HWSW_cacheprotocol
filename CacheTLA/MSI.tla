@@ -1,109 +1,188 @@
 -------------------------------- MODULE MSI --------------------------------
-EXTENDS TLC, Integers
+EXTENDS TLC, Integers, Sequences
 
 CONSTANT CoreNum, MaxWrite
 
 Cores == 1..CoreNum
-memory == "Memory"
+memory == 0
 Storage == Cores \union {memory}
-State == {"M", "S", "I"}
+
+CState == {"I", "IS^D", "IM^D", "S", "SM^D", "M"}
+MState == {"IorS", "IorS^D", "M"}
 Data == 0..MaxWrite
+Message == [type: {"GetS", "GetM", "PutM"},
+            sender: Cores,
+            receivers: SUBSET Storage]
+           \union
+           [type: {"Data"},
+            data: Data,
+            sender: Storage,
+            receivers: SUBSET Storage]
 
-VARIABLES state, data, currentValue, i, pc
+VARIABLES state, data, bus, queue
 
-vars == << state, data, currentValue, i, pc >>
-
-ProcSet == {"bus"}
-
-  PrRd(core) == /\ CASE state[core] = "I" ->
-                           /\ data' = [data EXCEPT ![core] = data[memory]]
-                           /\ state' = [state EXCEPT ![core] = "S"]
-                     [] OTHER ->
-                           /\ TRUE
-                           /\ UNCHANGED << state, data >>
-                /\ Assert(data'[core] = currentValue, 
-                                "Failure of assertion at line 30, column 3 of macro called at line 96, column 7.")
-                                
-  PrWr(core) == /\ currentValue' = currentValue + 1
-                /\ data' = [data EXCEPT ![core] = currentValue']
-                /\ state' = [state EXCEPT ![core] = "M"]
-                
-  BusRd(core) == /\ CASE state[core] = "M" ->
-                            /\ data' = [data EXCEPT ![memory] = data[core]]
-                            /\ state' = [state EXCEPT ![core] = "S"]
-                      [] OTHER ->
-                            /\ TRUE
-                            /\ UNCHANGED << state, data >>
-                            
-  BusRdX(core) == /\ CASE state[core] = "S" ->
-                             /\ state' = [state EXCEPT ![core] = "I"]
-                             /\ data' = data
-                       [] state[core] = "M" ->
-                             /\ data' = [data EXCEPT ![memory] = data[core]]
-                             /\ state' = [state EXCEPT ![core] = "I"]
-                       [] OTHER ->
-                             /\ TRUE
-                             /\ UNCHANGED << state, data >>
-   
-  BusUpgr(core) == /\ CASE state[core] = "S" ->
-                              /\ state' = [state EXCEPT ![core] = "I"]
-                        [] state'[core] = "M" ->
-                              /\ Assert(FALSE, 
-                                             "Failure of assertion at line 89, column 5 of macro called at line 127, column 7.")
-                        [] OTHER ->
-                              /\ TRUE
-                              /\ UNCHANGED << state, data >>
-                              
-  BusRdFrom(core) == /\ PrRd(core)
-                     /\ \A otherCore \in Cores \ {core}: BusRd(otherCore)
-                     
-  BusRdXFrom(core) == /\ PrWr(core)
-                      /\ \A otherCore \in Cores \ {core}: BusRdX(otherCore)
-                     
-  BusUpgrFrom(core) == /\ PrWr(core)
-                       /\ \A otherCore \in Cores \ {core}: BusUpgr(otherCore)
-                       
+vars == << state, data, bus, queue >>
 
 Init == (* Global variables *)
-        /\ state = [c \in Cores |-> "I"]
+        /\ state = [c \in Storage |-> IF c \in Cores THEN "I" ELSE "IorS"]
         /\ data = [c \in Storage |-> 0]
-        /\ currentValue = 0
-        /\ i = 0
-        /\ pc = [self \in ProcSet |-> "BusRequest"]
-                       
-bus == /\ pc["bus"] = "BusRequest"
-       /\ \E core \in Cores:
-            \/ /\ state[core] = "I"
-               /\ BusRdFrom(core)
-            \/ /\ state[core] = "I"
-               /\ BusRdXFrom(core)
-            \/ /\ state[core] = "S"
-               /\ BusUpgrFrom(core)
-       /\ IF currentValue < MaxWrite
-             THEN /\ pc' = [pc EXCEPT !["bus"] = "BusRequest"]
-             ELSE /\ pc' = [pc EXCEPT !["bus"] = "Done"]
-       /\ UNCHANGED << data, currentValue >>
-       
+        /\ bus = [type |-> "Data", data |-> 0, sender |-> memory, receivers |-> {}]
+        /\ queue = {}
 
-TYPE_OK == /\ \A c \in Cores : state[c] \in State
-           /\ \A c \in Storage : data[c] \in Data
+-----------------
 
-                     
-(* Allow infinite stuttering to prevent deadlock on termination. *)
-Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
-               /\ UNCHANGED vars
-                     
-Next == bus
-           \/ Terminating
+nextMessage ==
+    /\ bus.receivers = {}
+    /\ queue # {}
+    
+updateBus ==
+    /\ \E message \in queue:
+        /\ bus' = message
+        /\ queue' = queue \ {message}
+    /\ UNCHANGED << state, data >>
+    
+updateData(entity, newData) ==
+    data' = [data EXCEPT![entity] = newData]
+
+updateState(entity, newState) ==
+    state' = [state EXCEPT![entity] = newState]
+    
+send(msg) == queue' = queue \union {msg}
+
+sendData(from, to) ==
+    send([type |-> "Data",
+          data |-> data[from],
+          sender |-> from,
+          receivers |-> to])
+
+sendMsg(msg, from) ==
+    send([type |-> msg,
+          sender |-> from,
+          receivers |-> Storage])
+
+trans(entity, prevState, message, isOwn, nextState) ==
+    /\ state[entity] = prevState
+    /\ bus.type = message
+    /\ \/ (bus.sender = entity) = isOwn
+       \/ message = "Data"
+    /\ updateState(entity, nextState)
+    
+memoryTrans(prevState, message, nextState) ==
+    trans(memory, prevState, message, FALSE, nextState)
+    
+updateBusReceivers(entity) ==
+    /\ entity \in bus.receivers
+    /\ bus' = [bus EXCEPT!.receivers = bus.receivers \ {entity}]
+
+coreBusEvent(core) ==
+    /\ updateBusReceivers(core)
+    /\ \/ /\
+               \/ trans(core, "I", "GetS", FALSE, "I")
+               \/ trans(core, "I", "GetM", FALSE, "I")
+               \/ trans(core, "I", "PutM", FALSE, "I")
+               \/ trans(core, "IS^D", "GetS", TRUE, "IS^D")
+               \/ trans(core, "S", "GetS", FALSE, "S")
+               \/ trans(core, "S", "GetM", FALSE, "I")
+               \/ trans(core, "SM^D", "GetM", TRUE, "SM^D")
+               \/ trans(core, "IM^D", "GetM", TRUE, "IM^D")
+          /\ UNCHANGED << data, queue >>
+       \/ /\ 
+               \/ /\ trans(core, "IS^D", "Data", TRUE, "S")
+                  /\ updateData(core, bus.data)
+               \/ /\ trans(core, "IM^D", "Data", TRUE, "M")
+                  /\ updateData(core, bus.data)
+               \/ /\ trans(core, "SM^D", "Data", TRUE, "M")
+                  /\ updateData(core, bus.data)
+          /\ UNCHANGED << queue >>
+       \/ /\
+               \/ /\ trans(core, "M", "GetS", FALSE, "S")
+                  /\ sendData(core, {memory, bus.sender})
+               \/ /\ trans(core, "M", "GetM", FALSE, "I")
+                  /\ sendData(core, {bus.sender})
+          /\ UNCHANGED << data >>
+
+memoryBusEvent ==
+    /\ updateBusReceivers(memory)
+    /\ \/ /\ 
+             \/ /\ memoryTrans("IorS", "GetS", "IorS")
+                /\ sendData(memory, {bus.sender})
+             \/ /\ memoryTrans("IorS", "GetM", "M")
+                /\ sendData(memory, {bus.sender})
+          /\ UNCHANGED << data >>
+       \/ /\ 
+             \/ memoryTrans("M", "GetS", "IorS^D")
+             \/ memoryTrans("M", "GetM", "M")
+             \/ memoryTrans("M", "PutM", "IorS^D")
+          /\ UNCHANGED << data, queue >>
+       \/ /\ 
+             \/ /\ memoryTrans("IorS^D", "Data", "IorS")
+                /\ updateData(memory, bus.data)
+          /\ UNCHANGED << queue >>
+    
+getS(core) ==
+    /\ sendMsg("GetS", core)
+    /\ state[core] = "I"
+    /\ updateState(core, "IS^D")
+    /\ UNCHANGED << data, bus >>
+getM(core) ==
+    /\ sendMsg("GetM", core)
+    /\ \/ /\ state[core] = "I"
+          /\ updateState(core, "IM^D")
+       \/ /\ state[core] = "S"
+          /\ updateState(core, "SM^D")
+    /\ UNCHANGED << data, bus >>
+putM(core) ==
+    /\ state[core] = "M"
+    /\ sendMsg("PutM", core)
+    /\ sendData(core, {memory})
+    /\ updateState(core, "I")
+    /\ UNCHANGED << data, bus >>
+write(core) ==
+    /\ state[core] = "M"
+    /\ data[core] < MaxWrite
+    /\ updateData(core, data[core] + 1)
+    /\ UNCHANGED << state, bus, queue >>
+
+coreAction(core) ==
+    IF bus.receivers # {}
+    THEN coreBusEvent(core)
+    ELSE \/ getS(core)
+         \/ getM(core)
+         \/ putM(core)
+         \/ write(core)
+         
+memoryAction == memoryBusEvent
+
+Next == 
+    IF nextMessage
+    THEN updateBus
+    ELSE
+        \/ \E core \in Cores: coreAction(core)
+        \/ memoryAction
+
+------------------
+
+typeInvariant == 
+    /\ \A c \in Cores : state[c] \in CState
+    /\ state[memory] \in MState
+    /\ \A c \in Storage : data[c] \in Data
+    /\ bus \in Message
+    /\ \A msg \in queue : msg \in Message
+    
+cacheCoherence ==
+    /\ \A c \in Cores :
+        state[c] \in {"S", "M"} => data[c] >= data[memory]
+    /\ \A c1, c2 \in Cores :
+        state[c1] \in {"S", "M"} => data[c1] >= data[c2]
 
 Spec == Init /\ [][Next]_vars
-             /\ TYPE_OK
+             
+Invariants == /\ typeInvariant
+              /\ cacheCoherence
 
-Termination == <>(\A self \in ProcSet: pc[self] = "Done")
-                       
-                       
+THEOREM Spec => Invariants
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Nov 29 21:37:34 EST 2022 by hq990
+\* Last modified Thu Dec 01 20:36:13 EST 2022 by hq990
 \* Created Wed Nov 23 20:34:22 EST 2022 by hq990
