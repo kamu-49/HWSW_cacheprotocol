@@ -43,3 +43,6 @@ Trying to write TLA+ code for cache protocols.
 
 ### Qiao 12.1
 - A detailed guide for cache coherence protocols (containing complete state transition rules): <https://course.ece.cmu.edu/~ece847c/S15/lib/exe/fetch.php?media=part2_2_sorin12.pdf>
+
+### Cam 12.5
+- Finally finally figured out Rumur. Added Ubuntu through Microsoft. No longer need the flex and rumur attepmted installation. Will focus onlearning more about Rumur with Ubuntu and how to properly create output files (Rumur will only proplery run with a given output file). Will also switch between that and helping with TLA stuff with Qiao
