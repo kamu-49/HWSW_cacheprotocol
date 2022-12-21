@@ -1,0 +1,47 @@
+#include "spin.pml"
+
+#define N 3  // number of cache lines
+#define M 2  // number of processors
+
+typedef enum {I=0, S=1, E=2, M=3} state_t;
+
+state_t state[N]; // state of each cache line
+int owner[N];     // owner of each cache line (0 if no owner)
+int req[M];       // request flags for each processor
+int ack[M];       // ack flags for each processor
+
+init {
+  for (int i=0; i<N; i++) {
+    state[i] = I;
+    owner[i] = 0;
+  }
+  for (int i=0; i<M; i++) {
+    req[i] = 0;
+    ack[i] = 0;
+  }
+}
+
+never {
+  // Processor requests
+  for (int i=0; i<M; i++) {
+    if ::req[i] ->
+      // Find an invalid or shared cache line to upgrade
+      for (int j=0; j<N; j++) {
+        if (state[j]==I || state[j]==S) {
+          state[j] = E;
+          owner[j] = i+1;
+          ack[i] = 1;
+          break;
+        }
+      }
+    fi;
+  }
+
+  // Processor releases
+  for (int i=0; i<M; i++) {
+    if ::(state[i]==M && owner[i]==(i+1)) ->
+      state[i] = S;
+      owner[i] = 0;
+    fi;
+  }
+}

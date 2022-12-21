@@ -1,0 +1,73 @@
+# simple promela model of an MSI model
+byte cache[3];  // 0 = Invalid, 1 = Shared, 2 = Modified
+chan req = [2] of { byte };  // request channel
+chan ack = [2] of { byte };  // acknowledge channel
+
+// Process representing a cache
+proctype Cache(byte id) {
+  byte state;
+
+  // Initialize cache to Invalid state
+  cache[id] = 0;
+  state = 0;
+
+  // Loop forever
+  do
+    :: req[id]?state  // receive request from processor
+      -> if
+        :: state == 0  // processor requests data in Invalid state
+          -> ack[id]!0;  // acknowledge request and send data
+          state = 1;  // update cache state to Shared
+        :: state == 1  // processor requests data in Shared state
+          -> ack[id]!1;  // acknowledge request and send data
+        :: state == 2  // processor requests data in Modified state
+          -> ack[id]!2;  // acknowledge request and send data
+          cache[id] = 2;  // update cache state to Modified
+      fi
+    :: req[1-id]?state  // receive request from other cache
+      -> if
+        :: state == 0  // other cache requests data in Invalid state
+          -> ack[1-id]!cache[id];  // acknowledge request and send data
+          cache[id] = 1;  // update cache state to Shared
+        :: state == 1  // other cache requests data in Shared state
+          -> ack[1-id]!cache[id];  // acknowledge request and send data
+          cache[id] = 1;  // update cache state to Shared
+        :: state == 2  // other cache requests data in Modified state
+          -> ack[1-id]!cache[id];  // acknowledge request and send data
+          cache[id] = 2;  // update cache state to Modified
+      fi
+  od
+}
+
+// Process representing a processor
+proctype Processor(byte id) {
+  byte state;
+  byte data;
+
+  // Initialize processor to Invalid state
+  state = 0;
+
+  // Loop forever
+  do
+    :: state == 0  // processor is in Invalid state
+      -> req[id]!0;  // request data from cache
+      ack[id]?data;  // receive data from cache
+      state = data;  // update processor state
+    :: state == 1  // processor is in Shared state
+      -> req[id]!1;  // request data from cache
+      ack[id]?data;  // receive data from cache
+      state = data;  // update processor state
+    :: state == 2  // processor is in Modified state
+      -> req[id]!2;  // request data from cache
+      ack[id]?data;  // receive data from cache
+      state = data;  // update processor state
+  od
+}
+
+// Create two caches and two processors
+Cache(0);
+Cache(1);
+Processor(0);
+Processor(1);
+
+ltl safety { []<> (Cache(0) || Cache(1) || Processor(0) || Processor(1)) }
